@@ -1,82 +1,81 @@
-// Copyright (c) 2019 Shajeeb TM
-// HAZI TECH
-// Updated by Hasitha Jayasundara
-// Visit my YouTube Channel - http://www.youtube.com/c/HAZITECH?sub_confirmation=1
-
 #include <arduinoFFT.h>
 #include <MD_MAX72xx.h>
 #include <SPI.h>
 #include <EEPROM.h>
 
-#define SAMPLES 64                                            //Must be a power of 2
-#define HARDWARE_TYPE MD_MAX72XX::FC16_HW                     // Set display type  so that  MD_MAX72xx library treets it properly
-#define MAX_DEVICES  4                                        // Total number display modules
-#define CLK_PIN   13                                          // Clock pin to communicate with display
-#define DATA_PIN  11                                          // Data pin to communicate with display
-#define CS_PIN    10                                          // Control pin to communicate with display
-#define  xres 32                                              // Total number of  columns in the display, must be <= SAMPLES/2
-#define  yres 8                                               // Total number of  rows in the display
+#define SAMPLES 64                                           
+#define HARDWARE_TYPE MD_MAX72XX::FC16_HW                     
+#define MAX_DEVICES  4                                       
+#define CLK_PIN   13                                         
+#define DATA_PIN  11                                         
+#define CS_PIN    10                                         
+#define XRES 32                                              
+#define YRES 8                                               
+#define BUTTON_PIN 6                                         
+#define DEBOUNCE_DELAY 50
+#define ARRAY_SIZE 9
+#define MODE_COUNT 4
+#define ADC_OFFSET 512
 
-int audio_response = 20;                                      // put a value between 10 and 80. Smaller the number, higher the audio response
+const int audio_response = 20;                                   
 
-int MY_ARRAY[]={0, 128, 192, 224, 240, 248, 252, 254, 255};   // default = standard pattern
-int MY_MODE_1[]={0, 128, 192, 224, 240, 248, 252, 254, 255};  // standard pattern
-int MY_MODE_2[]={0, 128, 64, 32, 16, 8, 4, 2, 1};             // only peak pattern
-int MY_MODE_3[]={0, 128, 192, 160, 144, 136, 132, 130, 129};  // only peak +  bottom point
-int MY_MODE_4[]={0, 128, 192, 160, 208, 232, 244, 250, 253};  // one gap in the top , 3rd light onwards
+int modes[MODE_COUNT][ARRAY_SIZE] = {
+  {0, 128, 192, 224, 240, 248, 252, 254, 255},
+  {0, 128, 64, 32, 16, 8, 4, 2, 1},
+  {0, 128, 192, 160, 144, 136, 132, 130, 129},
+  {0, 128, 192, 160, 208, 232, 244, 250, 253}
+};
 
 double vReal[SAMPLES];
 double vImag[SAMPLES];
-char data_avgs[xres];
+char data_avgs[XRES];
 
 int yvalue;
 int displaycolumn , displayvalue;
-int peaks[xres];
-const int buttonPin = 6;                                      // the number of the pushbutton pin
-int state = HIGH;                                             // the current reading from the input pin
-int previousState = LOW;                                      // the previous reading from the input pin
+int peaks[XRES];
 int displaymode; 
-unsigned long lastDebounceTime = 0;                           // the last time the output pin was toggled
-unsigned long debounceDelay = 50;                             // the debounce time; increase if the output flickers
+unsigned long lastDebounceTime = 0; 
+int MY_ARRAY[ARRAY_SIZE];
 
-MD_MAX72XX mx = MD_MAX72XX(HARDWARE_TYPE, CS_PIN, MAX_DEVICES);   // display object
-arduinoFFT FFT = arduinoFFT();                                    // FFT object
- 
-void setup() {
-    EEPROM.update(1,1);                                           //(memory address, value), RUN THIS FOR THE FIRST TIME
-    displaymode = EEPROM.read(1);
-    ADCSRA = 0b11100101;                                          // set ADC to free running mode and set pre-scalar to 32 (0xe5)
-    ADMUX = 0b00000000;                                           // use pin A0 and external voltage reference
-    pinMode(buttonPin, INPUT);
-    mx.begin();                                                   // initialize display
-    delay(50);                                                    // wait to get reference voltage stabilized
+MD_MAX72XX mx = MD_MAX72XX(HARDWARE_TYPE, CS_PIN, MAX_DEVICES);   
+arduinoFFT FFT = arduinoFFT();                                     
+
+void updateMode(int mode) {
+  for (int i = 0; i < ARRAY_SIZE; i++) {
+    MY_ARRAY[i] = modes[mode - 1][i];
+  }
+  displaymode = mode;
+  EEPROM.update(1, mode);
 }
- 
+
+void setup() {
+  EEPROM.update(1,1);                                           
+  displaymode = EEPROM.read(1);
+  ADCSRA = 0b11100101;                                          
+  ADMUX = 0b00000000;                                           
+  pinMode(BUTTON_PIN, INPUT);
+  mx.begin();                                                   
+  delay(50);                                                    
+  updateMode(displaymode);
+}
+
 void loop() {
    // ++ Sampling
-   for(int i=0; i<SAMPLES; i++)
-    {
-      while(!(ADCSRA & 0x10));                                    // wait for ADC to complete current conversion ie ADIF bit set
-      ADCSRA = 0b11110101 ;                                       // clear ADIF bit so that ADC can do next operation (0xf5)
-      int value = ADC - 512 ;                                     // Read from ADC and subtract DC offset caused value
-      vReal[i]= value/8;                                          // Copy to bins after compressing
+   for(int i=0; i<SAMPLES; i++) {
+      while(!(ADCSRA & 0x10));                                    
+      ADCSRA = 0b11110101 ;                                       
+      int value = ADC - ADC_OFFSET ;                              
+      vReal[i]= value/8;                                          
       vImag[i] = 0;                         
     }
-    // -- Sampling
 
- 
-    // ++ FFT
     FFT.Windowing(vReal, SAMPLES, FFT_WIN_TYP_HAMMING, FFT_FORWARD);
     FFT.Compute(vReal, vImag, SAMPLES, FFT_FORWARD);
     FFT.ComplexToMagnitude(vReal, vImag, SAMPLES);
-    // -- FFT
 
-    
-    // ++ re-arrange FFT result to match with no. of columns on display ( xres )
-    int step = (SAMPLES/2)/xres; 
+    int step = (SAMPLES/2)/XRES; 
     int c=0;
-    for(int i=0; i<(SAMPLES/2); i+=step)  
-    {
+    for(int i=0; i<(SAMPLES/2); i+=step)  {
       data_avgs[c] = 0;
       for (int k=0 ; k< step ; k++) {
           data_avgs[c] = data_avgs[c] + vReal[i+k];
@@ -84,93 +83,25 @@ void loop() {
       data_avgs[c] = data_avgs[c]/step; 
       c++;
     }
-    // -- re-arrange FFT result to match with no. of columns on display ( xres )
 
-    
-    // ++ send to display according measured value 
-    for(int i=0; i<xres; i++)
-    {
-      data_avgs[i] = constrain(data_avgs[i],0,audio_response);              // set max & min values for buckets
-      data_avgs[i] = map(data_avgs[i], 0, audio_response, 0, yres);         // remap averaged values to yres
+    for(int i=0; i<XRES; i++) {
+      data_avgs[i] = constrain(data_avgs[i],0,audio_response);              
+      data_avgs[i] = map(data_avgs[i], 0, audio_response, 0, YRES);        
       yvalue=data_avgs[i];
 
-      peaks[i] = peaks[i]-1;    // decay by one light
+      peaks[i] = peaks[i]-1;
       if (yvalue > peaks[i]) 
           peaks[i] = yvalue ;
       yvalue = peaks[i];    
       displayvalue=MY_ARRAY[yvalue];
       displaycolumn=31-i;
-      mx.setColumn(displaycolumn, displayvalue);                // for left to right
+      mx.setColumn(displaycolumn, displayvalue);                
      }
-     // -- send to display according measured value 
      
-    displayModeChange ();                                       // check if button pressed to change display mode
-
-    int reading = digitalRead(buttonPin);
-    if (reading == LOW)
-    {
-      switch (displaymode) 
-      {
-      case 1:    //       move from mode 1 to 2
-      for (int i=0 ; i<=8 ; i++ ) {
-        MY_ARRAY[i]=MY_MODE_2[i];
-      }
-      break;
-      case 2:    //       move from mode 2 to 3
-      for (int i=0 ; i<=8 ; i++ ) {
-        MY_ARRAY[i]=MY_MODE_3[i];
-      }
-      break;
-      case 3:    //     move from mode 3 to 4
-      for (int i=0 ; i<=8 ; i++ ) {
-        MY_ARRAY[i]=MY_MODE_4[i];
-      }
-      break;
-      case 4:    //      move from mode 4 to 1      
-      for (int i=0 ; i<=8 ; i++ ) {
-        MY_ARRAY[i]=MY_MODE_1[i];
-      }
-      break;
-      } 
+    int reading = digitalRead(BUTTON_PIN);
+    if (reading == HIGH && previousState == LOW && millis() - lastDebounceTime > debounceDelay) {
+      updateMode((displaymode % MODE_COUNT) + 1);
+      lastDebounceTime = millis();
     }
-}
-
-void displayModeChange() {
-  int reading = digitalRead(buttonPin);
-  if (reading == HIGH && previousState == LOW && millis() - lastDebounceTime > debounceDelay) // works only when pressed
-  {
-   switch (displaymode) 
-   {
-    case 1:    //       move from mode 1 to 2
-      displaymode = 2;
-      EEPROM.update(1,2); 
-      for (int i=0 ; i<=8 ; i++ ) {
-        MY_ARRAY[i]=MY_MODE_2[i];
-      }
-      break;
-    case 2:    //       move from mode 2 to 3
-      displaymode = 3;
-      EEPROM.update(1,3); 
-      for (int i=0 ; i<=8 ; i++ ) {
-        MY_ARRAY[i]=MY_MODE_3[i];
-      }
-      break;
-    case 3:    //     move from mode 3 to 4
-      displaymode = 4;
-      EEPROM.update(1,4); 
-      for (int i=0 ; i<=8 ; i++ ) {
-        MY_ARRAY[i]=MY_MODE_4[i];
-      }
-      break;
-    case 4:    //      move from mode 4 to 1
-      displaymode = 1;
-      EEPROM.update(1,1);       
-      for (int i=0 ; i<=8 ; i++ ) {
-        MY_ARRAY[i]=MY_MODE_1[i];
-      }
-      break;
-  }
-    lastDebounceTime = millis();
-  }
-  previousState = reading;
+    previousState = reading;
 }
